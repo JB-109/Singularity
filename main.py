@@ -30,7 +30,9 @@ response = client.models.generate_content(
 
 if len(sys.argv) > 2 and sys.argv[2] == "--verbose":
     print(f"User prompt: {prompt}")
+    print(f"AI response: {response.text}")
     print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
     print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
 else:
     print(response.text)
+    
