@@ -1,13 +1,11 @@
 from config import char_limit
 import os 
 
-def get_file_content(wookring_dir, file_path):
-    joined_path = os.path.join(wookring_dir, file_path)
-    abs_work_path = os.path.abspath(wookring_dir)
+def get_file_content(working_dir, file_path):
+
+    joined_path = os.path.join(working_dir, file_path)
+    abs_work_path = os.path.abspath(working_dir)
     abs_joined = os.path.abspath(joined_path)
-    print(joined_path)
-    print(abs_work_path)
-    print(abs_joined)
 
     try:
 

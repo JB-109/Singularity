@@ -22,6 +22,7 @@ if not prompt or not prompt.strip():
 messages = [
     types.Content(role="user", parts=[types.Part(text=prompt)]),
 ]
+
 #++++++++++
 
 response = client.models.generate_content(
