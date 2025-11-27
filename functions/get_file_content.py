@@ -1,5 +1,6 @@
-from config import char_limit
+import config
 import os 
+from google.genai import types
 
 def get_file_content(working_dir, file_path):
 
@@ -17,11 +18,25 @@ def get_file_content(working_dir, file_path):
         with open(abs_joined, "r") as f:
             content = f.read()
 
-        if len(content) > char_limit:
-            content = content[:char_limit]
+        if len(content) > config.char_limit:
+            content = content[:config.char_limit]
         
-        content += f'[...File "{file_path}" truncated at {char_limit} characters]'
+        content += f'[...File "{file_path}" truncated at {config.char_limit} characters]'
         return content
         
     except Exception as e:
         return f"Error: {e}"
+
+schema_get_file_content = types.FunctionDeclaration(
+    name="get_file_content",
+    description="it is used to get the content of the file, constrained to the working directory.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "file_path": types.Schema(
+                type=types.Type.STRING,
+                description="the filepath to get the content from, relative to the working directory.",
+            ),
+        },
+    ),
+)
