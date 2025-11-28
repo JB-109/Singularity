@@ -50,14 +50,6 @@ available_functions = types.Tool(
     ]
 )
 
-response = client.models.generate_content(
-    model='gemini-2.0-flash',
-    contents=messages,
-    config=types.GenerateContentConfig(
-        system_instruction=config.system_prompt,
-        tools=[available_functions]
-    )
-)
 
 def call_function(function_call_part, verbose=False):
     if function_call_part.name in functions_map:
@@ -89,19 +81,55 @@ def call_function(function_call_part, verbose=False):
 
 #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-function_responses = []
-if len(sys.argv) > 0:
-    call_function(response.function_calls[0], True)
-    print(f"User prompt: {prompt}")
-    if response.text is not None:
-        print(f"AI response: {response.text}")
+count = 0
+while count <= 14:
 
+    response = client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=messages,
+        config=types.GenerateContentConfig(
+            system_instruction=config.system_prompt,
+            tools=[available_functions]
+        )
+    )
+
+    has_function_calls = response.function_calls is not None and len(response.function_calls) > 0
+    has_text_response = response.text is not None and response.text.strip()
+    
+    if not has_function_calls and has_text_response:
+        print(response.text)
+        break
+
+    count += 1
+
+    function_responses = []
     for each in response.function_calls:
+        if len(sys.argv) > 2 and sys.argv[2] == "--verbose":
+            print(f"Calling function: {each.name}({each.args})")
+        else: 
+            print(f" - Calling function: {each.name}")
+        
         result = call_function(each)
         if not result.parts or not result.parts[0].function_response:
             raise Exception("empty function call result")
+        
         if len(sys.argv) > 2 and sys.argv[2] == "--verbose":
             print(f"-> {result.parts[0].function_response.response}")
+        
         function_responses.append(result.parts[0])
+            
+    messages.append(
+        types.Content(
+            role="user",
+            parts=function_responses
+        )
+    )
+
+
+    
+
+
+
+
 
         

@@ -1,61 +1,22 @@
-# calculator.py
+import ast
 
 class Calculator:
-    def __init__(self):
-        self.operators = {
-            "+": lambda a, b: a + b,
-            "-": lambda a, b: a - b,
-            "*": lambda a, b: a * b,
-            "/": lambda a, b: a / b,
-        }
-        self.precedence = {
-            "+": 1,
-            "-": 1,
-            "*": 2,
-            "/": 2,
-        }
-
     def evaluate(self, expression):
-        if not expression or expression.isspace():
+        if not expression or expression.strip() == "":
             return None
-        tokens = expression.strip().split()
-        return self._evaluate_infix(tokens)
 
-    def _evaluate_infix(self, tokens):
-        values = []
-        operators = []
+        try:
+            # Safely evaluate the expression using ast.literal_eval
+            # But first, replace division with truediv
+            expression = expression.replace("/", "//")
+            node = ast.parse(expression, mode='eval')
 
-        for token in tokens:
-            if token in self.operators:
-                while (
-                    operators
-                    and operators[-1] in self.operators
-                    and self.precedence[operators[-1]] >= self.precedence[token]
-                ):
-                    self._apply_operator(operators, values)
-                operators.append(token)
-            else:
-                try:
-                    values.append(float(token))
-                except ValueError:
-                    raise ValueError(f"invalid token: {token}")
+            # Check for disallowed nodes (e.g., function calls, attribute access)
+            for n in ast.walk(node):
+                if isinstance(n, (ast.Call, ast.Attribute, ast.Import, ast.ImportFrom)):
+                    raise ValueError("Disallowed operation in expression")
 
-        while operators:
-            self._apply_operator(operators, values)
-
-        if len(values) != 1:
-            raise ValueError("invalid expression")
-
-        return values[0]
-
-    def _apply_operator(self, operators, values):
-        if not operators:
-            return
-
-        operator = operators.pop()
-        if len(values) < 2:
-            raise ValueError(f"not enough operands for operator {operator}")
-
-        b = values.pop()
-        a = values.pop()
-        values.append(self.operators[operator](a, b))
+            result = eval(compile(node, '<string>', 'eval'), {'__builtins__': None}, {})
+            return float(result)
+        except (SyntaxError, NameError, TypeError, ValueError) as e:
+            raise ValueError(f"Invalid expression: {e}")
