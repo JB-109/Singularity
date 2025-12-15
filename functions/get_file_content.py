@@ -20,13 +20,14 @@ def get_file_content(working_dir, file_path):
 
         if len(content) > config.char_limit:
             content = content[:config.char_limit]
-        
-        content += f'[...File "{file_path}" truncated at {config.char_limit} characters]'
+            content += f'[...File "{file_path}" truncated at {config.char_limit} characters]'
+
         return content
         
     except Exception as e:
         return f"Error: {e}"
 
+# name of the fn and parameters needs to be the same in order to get error free response.
 schema_get_file_content = types.FunctionDeclaration(
     name="get_file_content",
     description="it is used to get the content of the file, constrained to the working directory.",

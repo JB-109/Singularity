@@ -61,7 +61,21 @@ def call_function(function_call_part, verbose=False):
         else:
             print(f" - Calling function: {function_call_part.name}")
 
-        result = functions_map[function_call_part.name](working_dir=os.path.abspath("./calculator"), **function_call_part.args)
+        try:
+
+            result = functions_map[function_call_part.name](working_dir=os.path.abspath("./calculator"), **function_call_part.args)
+
+        except Exception as e:
+            print(f"Error: {e}")
+            return types.Content(
+                role="tool",
+                parts=[
+                    types.Part.from_function_response(
+                        name=function_call_part.name,
+                        response={"error": str(e)},
+                    )   
+                ]
+            )
 
         return types.Content(
             role="tool",
@@ -83,21 +97,29 @@ def call_function(function_call_part, verbose=False):
             ]
         )
 
+    
 #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # max self-talk: 15
-count = 0
-while count <= 14:
 
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=messages,
-        config=types.GenerateContentConfig(
-            system_instruction=config.system_prompt,
-            tools=[available_functions]
+count = 1
+while count <= 15:
+    try:
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=config.system_prompt,
+                tools=[available_functions]
+            )
         )
-    )
 
+    except Exception as e:
+        print(f"Error: {e} at {count}")
+        count += 1
+        continue
+    
     has_function_calls = response.function_calls is not None and len(response.function_calls) > 0
     has_text_response = response.text is not None and response.text.strip()
     
@@ -110,11 +132,16 @@ while count <= 14:
 
     function_responses = []
     for each in response.function_calls:
+        try:
 
-        if len(sys.argv) > 2 and sys.argv[2] == "--verbose":
-            result = call_function(each, True)
-        else: 
-            result = call_function(each)
+            if len(sys.argv) > 2 and sys.argv[2] == "--verbose":
+                result = call_function(each, True)
+            else: 
+                result = call_function(each)
+
+        except Exception as e:
+            print(f"Error: {e}")
+            continue
 
         if not result.parts or not result.parts[0].function_response:
             raise Exception("empty function call result")

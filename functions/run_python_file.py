@@ -11,7 +11,6 @@ def run_python_file(working_dir, file_path, args=[]):
 
         if not abs_joined.startswith(abs_work_path):
             return f'Error: Cannot execute "{file_path}" as it is outside the permitted working directory'
-
         if not os.path.exists(abs_joined):
             return f'Error: File "{file_path}" not found.'
         if not abs_joined.endswith(".py"):
@@ -19,6 +18,7 @@ def run_python_file(working_dir, file_path, args=[]):
         
         result = subprocess.run(["python3", abs_joined] + args, capture_output=True, text=True, timeout=30)
         final_return = [f'STDOUT: {result.stdout}', f'STDERR: {result.stderr}']
+
         if result.returncode != 0:
             final_return.append(f'Process exited with code {result.returncode}')
         return "\n".join(final_return)
@@ -46,4 +46,5 @@ schema_run_python_file = types.FunctionDeclaration(
         },
     ),
 )
-    
+
+
