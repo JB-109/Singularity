@@ -1,20 +1,15 @@
 import json
-import os
 import hashlib
 import secrets
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
-# Data directory paths
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-CONVERSATIONS_DIR = os.path.join(DATA_DIR, "conversations")
+from database import get_db
 
-# Ensure directories exist
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(CONVERSATIONS_DIR, exist_ok=True)
-
+load_dotenv()
 
 # ==================== Models ====================
 
@@ -40,16 +35,11 @@ class AuthToken(BaseModel):
     expires_at: str
 
 
-# ==================== Token Storage ====================
-# Simple in-memory token storage (could be moved to file/redis later)
-active_tokens: dict[str, AuthToken] = {}
-
-
 # ==================== Helper Functions ====================
 
 def hash_password(password: str) -> str:
     """Hash a password using SHA-256 with salt."""
-    salt = "singularity_salt_2024"  # In production, use unique salt per user
+    salt = os.getenv("PASSWORD_SALT", "default_salt_change_me")
     return hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
 
 
@@ -58,63 +48,70 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-# ==================== User Storage ====================
-
-def load_users() -> dict[str, dict]:
-    """Load users from JSON file."""
-    if not os.path.exists(USERS_FILE):
-        return {}
-    with open(USERS_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_users(users: dict[str, dict]) -> None:
-    """Save users to JSON file."""
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-
+# ==================== User Storage (SQLite) ====================
 
 def create_user(username: str, password: str) -> tuple[Optional[User], Optional[str]]:
     """Create a new user. Returns (user, error)."""
-    users = load_users()
-    
-    # Check if username exists
-    for user_data in users.values():
-        if user_data["username"].lower() == username.lower():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Check if username exists
+        cursor.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+        if cursor.fetchone():
             return None, "Username already exists"
-    
-    # Create new user
-    user_id = secrets.token_urlsafe(16)
-    user = User(
-        id=user_id,
-        username=username,
-        password_hash=hash_password(password),
-        created_at=datetime.now().isoformat()
-    )
-    
-    users[user_id] = user.model_dump()
-    save_users(users)
-    
-    # Create user's conversation directory
-    os.makedirs(os.path.join(CONVERSATIONS_DIR, user_id), exist_ok=True)
-    
-    return user, None
+        
+        # Create new user
+        user_id = secrets.token_urlsafe(16)
+        now = datetime.now().isoformat()
+        password_hash = hash_password(password)
+        
+        cursor.execute(
+            "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, username, password_hash, now)
+        )
+        
+        user = User(
+            id=user_id,
+            username=username,
+            password_hash=password_hash,
+            created_at=now
+        )
+        return user, None
 
 
 def authenticate_user(username: str, password: str) -> tuple[Optional[User], Optional[str]]:
     """Authenticate a user. Returns (user, error)."""
-    users = load_users()
-    password_hash = hash_password(password)
-    
-    for user_id, user_data in users.items():
-        if user_data["username"].lower() == username.lower():
-            if user_data["password_hash"] == password_hash:
-                return User(**user_data), None
-            else:
-                return None, "Invalid password"
-    
-    return None, "User not found"
+    with get_db() as conn:
+        cursor = conn.cursor()
+        password_hash = hash_password(password)
+        
+        cursor.execute(
+            "SELECT * FROM users WHERE LOWER(username) = LOWER(?)",
+            (username,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return None, "User not found"
+        
+        if row["password_hash"] != password_hash:
+            return None, "Invalid password"
+        
+        return User(**dict(row)), None
 
+
+def get_user_by_id(user_id: str) -> Optional[User]:
+    """Get user by ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return User(**dict(row))
+        return None
+
+
+# ==================== Token Storage (SQLite) ====================
 
 def create_auth_token(user_id: str) -> AuthToken:
     """Create an authentication token for a user."""
@@ -123,103 +120,117 @@ def create_auth_token(user_id: str) -> AuthToken:
         token=generate_token(),
         expires_at=(datetime.now() + timedelta(days=7)).isoformat()
     )
-    active_tokens[token.token] = token
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token.token, token.user_id, token.expires_at)
+        )
+    
     return token
 
 
 def validate_token(token: str) -> Optional[str]:
     """Validate a token and return user_id if valid."""
-    if token not in active_tokens:
-        return None
-    
-    auth_token = active_tokens[token]
-    if datetime.fromisoformat(auth_token.expires_at) < datetime.now():
-        del active_tokens[token]
-        return None
-    
-    return auth_token.user_id
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tokens WHERE token = ?", (token,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return None
+        
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now():
+            cursor.execute("DELETE FROM tokens WHERE token = ?", (token,))
+            return None
+        
+        return row["user_id"]
 
 
 def invalidate_token(token: str) -> None:
     """Invalidate (logout) a token."""
-    if token in active_tokens:
-        del active_tokens[token]
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM tokens WHERE token = ?", (token,))
 
 
-def get_user_by_id(user_id: str) -> Optional[User]:
-    """Get user by ID."""
-    users = load_users()
-    if user_id in users:
-        return User(**users[user_id])
-    return None
-
-
-# ==================== Conversation Storage ====================
-
-def get_user_conversations_dir(user_id: str) -> str:
-    """Get the conversation directory for a user."""
-    return os.path.join(CONVERSATIONS_DIR, user_id)
-
+# ==================== Conversation Storage (SQLite) ====================
 
 def load_conversation(user_id: str, conversation_id: str) -> Optional[Conversation]:
     """Load a specific conversation."""
-    conv_path = os.path.join(get_user_conversations_dir(user_id), f"{conversation_id}.json")
-    if not os.path.exists(conv_path):
-        return None
-    with open(conv_path, "r") as f:
-        return Conversation(**json.load(f))
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return None
+        
+        data = dict(row)
+        data["messages"] = json.loads(data["messages"])
+        return Conversation(**data)
 
 
 def save_conversation(conversation: Conversation) -> None:
-    """Save a conversation to file."""
-    conv_dir = get_user_conversations_dir(conversation.user_id)
-    os.makedirs(conv_dir, exist_ok=True)
-    conv_path = os.path.join(conv_dir, f"{conversation.id}.json")
-    with open(conv_path, "w") as f:
-        json.dump(conversation.model_dump(), f, indent=2)
+    """Save a conversation (insert or update)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        messages_json = json.dumps(conversation.messages)
+        
+        cursor.execute(
+            """
+            INSERT INTO conversations (id, user_id, title, created_at, updated_at, messages)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                updated_at = excluded.updated_at,
+                messages = excluded.messages
+            """,
+            (conversation.id, conversation.user_id, conversation.title,
+             conversation.created_at, conversation.updated_at, messages_json)
+        )
 
 
 def list_user_conversations(user_id: str) -> list[dict]:
-    """List all conversations for a user (metadata only, not full messages)."""
-    conv_dir = get_user_conversations_dir(user_id)
-    if not os.path.exists(conv_dir):
-        return []
-    
-    conversations = []
-    for filename in os.listdir(conv_dir):
-        if filename.endswith(".json"):
-            conv_path = os.path.join(conv_dir, filename)
-            with open(conv_path, "r") as f:
-                conv_data = json.load(f)
-                conversations.append({
-                    "id": conv_data["id"],
-                    "title": conv_data["title"],
-                    "created_at": conv_data["created_at"],
-                    "updated_at": conv_data["updated_at"]
-                })
-    
-    # Sort by updated_at descending
-    conversations.sort(key=lambda x: x["updated_at"], reverse=True)
-    return conversations
+    """List all conversations for a user (metadata only)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, title, created_at, updated_at 
+            FROM conversations 
+            WHERE user_id = ? 
+            ORDER BY updated_at DESC
+            """,
+            (user_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def delete_conversation(user_id: str, conversation_id: str) -> bool:
     """Delete a conversation."""
-    conv_path = os.path.join(get_user_conversations_dir(user_id), f"{conversation_id}.json")
-    if os.path.exists(conv_path):
-        os.remove(conv_path)
-        return True
-    return False
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id)
+        )
+        return cursor.rowcount > 0
 
 
 def create_conversation(user_id: str, title: str = "New Chat") -> Conversation:
     """Create a new conversation for a user."""
+    now = datetime.now().isoformat()
     conversation = Conversation(
         id=secrets.token_urlsafe(16),
         user_id=user_id,
         title=title,
-        created_at=datetime.now().isoformat(),
-        updated_at=datetime.now().isoformat(),
+        created_at=now,
+        updated_at=now,
         messages=[]
     )
     save_conversation(conversation)

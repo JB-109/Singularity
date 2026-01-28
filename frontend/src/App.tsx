@@ -47,6 +47,8 @@ function ChatApp() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [currentModel, setCurrentModel] = useState<string>('lite');
+  const [modelCount, setModelCount] = useState<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -58,12 +60,26 @@ function ChatApp() {
     scrollToBottom();
   }, [messages]);
 
-  // Load conversations on mount
+  // Load conversations and model status on mount
   useEffect(() => {
     if (token) {
       loadConversations();
+      fetchModelStatus();
     }
   }, [token]);
+
+  const fetchModelStatus = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/model-status`);
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentModel(data.current_model);
+        setModelCount(data.current_model === 'lite' ? data.lite_count : data.main_count);
+      }
+    } catch (error) {
+      console.error('Failed to fetch model status:', error);
+    }
+  };
 
   const loadConversations = async () => {
     try {
@@ -99,6 +115,26 @@ function ChatApp() {
       }
     } catch (error) {
       console.error('Failed to load conversation:', error);
+    }
+  };
+
+  const deleteConversation = async (convId: string, e: MouseEvent) => {
+    e.stopPropagation(); // Prevent triggering loadConversation
+    try {
+      const response = await fetch(`${API_URL}/api/conversations/${convId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (response.ok) {
+        // Remove from local state
+        setConversations(prev => prev.filter(c => c.id !== convId));
+        // If we deleted the current conversation, reset the view
+        if (conversationId === convId) {
+          handleNewChat();
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
     }
   };
 
@@ -147,6 +183,10 @@ function ChatApp() {
       });
 
       if (!response.ok) {
+        if (response.status === 429) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || 'Rate limited. Please wait a moment.');
+        }
         throw new Error('Failed to get response');
       }
 
@@ -160,8 +200,9 @@ function ChatApp() {
         setConversationId(data.conversation_id);
       }
 
-      // Reload conversations to show the new one in sidebar
+      // Reload conversations and model status
       loadConversations();
+      fetchModelStatus();
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -171,11 +212,11 @@ function ChatApp() {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch {
+    } catch (error) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: 'Sorry, I encountered an error. Please make sure the backend server is running.',
+        content: error instanceof Error ? error.message : 'Sorry, I encountered an error. Please try again.',
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
@@ -284,6 +325,15 @@ function ChatApp() {
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                   </svg>
                   <span>{conv.title}</span>
+                  <button
+                    className="delete-conversation-btn"
+                    onClick={(e) => deleteConversation(conv.id, e)}
+                    title="Delete conversation"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14" />
+                    </svg>
+                  </button>
                 </div>
               ))}
             </div>
@@ -406,6 +456,8 @@ function ChatApp() {
               </button>
             </div>
             <div className="input-hint">
+              <span className={`model-badge ${currentModel}`}>{currentModel}</span>
+              <span className="model-count">{modelCount}/20</span>
               Singularity can make mistakes. Check important info.
             </div>
           </div>

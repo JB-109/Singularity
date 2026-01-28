@@ -5,8 +5,26 @@ build/
 dist/
 wheels/
 *.egg-info
-.env
 
 # Virtual environments
 .venv
 
+# Environment variables (secrets)
+.env
+
+# Database and user data
+data/
+
+# Sandbox execution files
+sandbox/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node modules (frontend)
+frontend/node_modules/

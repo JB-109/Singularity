@@ -13,8 +13,7 @@ from google.genai import types
 
 import config
 import auth
-import functions.get_files_info
-import functions.get_file_content
+import database
 import functions.run_python_file
 import functions.write_files
 
@@ -28,18 +27,14 @@ sessions: dict[str, list] = {}
 # API request counter for monitoring
 api_request_counter = 0
 
-# Function mappings (from main.py)
+# Function mappings
 functions_map = {
-    "get_files_info": functions.get_files_info.get_files_info,
-    "get_file_content": functions.get_file_content.get_file_content,
     "run_python_file": functions.run_python_file.run_python_file,
     "write_files": functions.write_files.write_files
 }
 
 available_functions = types.Tool(
     function_declarations=[
-        functions.get_files_info.schema_get_files_info,
-        functions.get_file_content.schema_get_file_content,
         functions.run_python_file.schema_run_python_file,
         functions.write_files.schema_write_files
     ]
@@ -48,12 +43,22 @@ available_functions = types.Tool(
 
 def call_function(function_call_part):
     """Execute a function call and return the result as Content."""
+    working_dir = os.path.abspath("./sandbox")
+    
     if function_call_part.name in functions_map:
         try:
             result = functions_map[function_call_part.name](
-                working_dir=os.path.abspath("./calculator"),
+                working_dir=working_dir,
                 **function_call_part.args
             )
+            
+            # Clear sandbox.py after running it
+            if function_call_part.name == "run_python_file":
+                sandbox_path = os.path.join(working_dir, "sandbox.py")
+                if os.path.exists(sandbox_path):
+                    with open(sandbox_path, "w") as f:
+                        f.write("")  # Clear the file
+                        
         except Exception as e:
             return types.Content(
                 role="tool",
@@ -107,11 +112,17 @@ def process_chat(message: str, session_id: str) -> tuple[str, list[dict]]:
     while count <= 15:
         global api_request_counter
         api_request_counter += 1
-        print(f"[API Request #{api_request_counter}] Making Gemini API call (loop iteration {count})")
+        
+        # Get current model based on daily limits
+        current_model, model_display = database.get_current_model()
+        print(f"[API Request #{api_request_counter}] Using model: {model_display} (loop iteration {count})")
+        
+        # Increment the request count for this model
+        database.increment_request_count(current_model)
         
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash-lite',
+                model=current_model,
                 contents=messages,
                 config=types.GenerateContentConfig(
                     system_instruction=config.system_prompt,
@@ -120,7 +131,6 @@ def process_chat(message: str, session_id: str) -> tuple[str, list[dict]]:
             )
         except Exception as e:
             print(f"Error calling Gemini API: {e}")
-            # Return error immediately instead of retrying (prevents rate limit issues)
             return f"Error: {str(e)}", function_calls_made
         
         has_function_calls = response.function_calls is not None and len(response.function_calls) > 0
@@ -181,6 +191,7 @@ class ChatResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    database.init_db()
     yield
 
 app = FastAPI(title="Singularity AI Chat", lifespan=lifespan)
@@ -216,6 +227,17 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(None)
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
         user_id = auth.validate_token(token)
+    
+    # Check rate limit
+    is_allowed, wait_seconds = database.check_user_rate_limit(user_id)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limited. Please wait {wait_seconds} seconds."
+        )
+    
+    # Record this request for rate limiting
+    database.record_user_request(user_id)
     
     session_id = request.session_id or str(uuid.uuid4())
     conversation_id = request.conversation_id
@@ -260,6 +282,12 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(None)
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/api/model-status")
+async def model_status():
+    """Get current model status (lite/main) and usage counts."""
+    return database.get_model_status()
 
 
 # ==================== Auth Request/Response Models ====================
